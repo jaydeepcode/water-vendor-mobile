@@ -1,40 +1,52 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
+import { getApiBaseUrl } from '../config/api';
 import {
   MotorStatusResponse,
   AuthCredentials,
   AuthResponse,
-  TripAmountResponse,
-  PumpStatus
+  PumpStatus,
+  PendingCustomer,
+  ApprovedCustomer,
+  WaterPurchaseTransactionDTO,
+  ActiveTripStatus
 } from '../types';
-
-const API_BASE_URL = 'https://api.connectsattva.in/api';
-const LOCAL_API_BASE_URL = 'http://localhost:3000/api'; // For local development
 
 class ApiService {
   private baseUrl: string;
-
+  
   constructor() {
-    // Use local API for development, remote for production
-    this.baseUrl = __DEV__ ? LOCAL_API_BASE_URL : API_BASE_URL;
-  }
+    this.baseUrl = getApiBaseUrl();
+  } 
 
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
     try {
-      const url = `${this.baseUrl}${endpoint}`;
-      const response = await fetch(url, {
-        headers: {
-          'Content-Type': 'application/json',
-          ...options.headers,
-        },
+      const apiKey = await AsyncStorage.getItem('apiKey');
+      const fullUrl = `${this.baseUrl}${endpoint}`;
+      
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(apiKey && { 'X-API-Key': apiKey }),
+        ...options.headers,
+      };
+      
+      const response = await fetch(fullUrl, {
         ...options,
+        headers,
       });
-
+      
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        
+        // Create custom error with status code for better handling
+        const error = new Error(errorData.message || `HTTP error! status: ${response.status}`);
+        (error as any).status = response.status;
+        throw error;
       }
-
+      
       return await response.json();
     } catch (error) {
       console.error(`API request failed: ${endpoint}`, error);
@@ -42,11 +54,107 @@ class ApiService {
     }
   }
 
+  /**
+   * Helper method for requests that may return empty responses (204, 404)
+   * Returns null for empty responses instead of attempting to parse JSON
+   */
+  private async requestWithEmptyResponse<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    emptyStatuses: number[] = [204, 404]
+  ): Promise<T | null> {
+    try {
+      const apiKey = await AsyncStorage.getItem('apiKey');
+      const fullUrl = `${this.baseUrl}${endpoint}`;
+      
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(apiKey && { 'X-API-Key': apiKey }),
+        ...options.headers,
+      };
+      
+      const response = await fetch(fullUrl, {
+        ...options,
+        headers,
+      });
+      
+      // If status indicates empty response, return null
+      if (emptyStatuses.includes(response.status)) {
+        return null;
+      }
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const error = new Error(errorData.message || `HTTP error! status: ${response.status}`);
+        (error as any).status = response.status;
+        throw error;
+      }
+      
+      // Check if response has content before parsing
+      const text = await response.text();
+      if (!text || text.trim() === '') {
+        return null;
+      }
+      
+      // Parse JSON response
+      try {
+        const data = JSON.parse(text);
+        
+        // Check if response is an empty object {}
+        if (data && typeof data === 'object' && Object.keys(data).length === 0) {
+          return null;
+        }
+        
+        return data;
+      } catch (parseError) {
+        console.warn(`Failed to parse JSON for ${endpoint}, returning null`);
+        return null;
+      }
+    } catch (error: any) {
+      // Silently return null for these endpoints to avoid UI disruption
+      return null;
+    }
+  }
+
+  private async unauthenticatedRequest<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    try {
+      const fullUrl = `${this.baseUrl}${endpoint}`;
+      
+      const headers = {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      };
+      
+      const response = await fetch(fullUrl, {
+        ...options,
+        headers,
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        
+        // Create custom error with status code for better handling
+        const error = new Error(errorData.message || `HTTP error! status: ${response.status}`);
+        (error as any).status = response.status;
+        throw error;
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error(`Unauthenticated API request failed: ${endpoint}`, error);
+      throw error;
+    }
+  }
+
   // Authentication
-  async authenticate(credentials: AuthCredentials): Promise<AuthResponse> {
-    return this.request<AuthResponse>('/authenticate', {
+  async login(username: string, password: string): Promise<AuthResponse> {
+    const deviceInfo = `${Platform.OS} ${Platform.Version}`;
+    return this.unauthenticatedRequest<AuthResponse>('/authenticate', {
       method: 'POST',
-      body: JSON.stringify({ credentials }),
+      body: JSON.stringify({ username, password, deviceInfo }),
     });
   }
 
@@ -56,70 +164,106 @@ class ApiService {
   }
 
   // Pump Control
-  async startPump(pump: 'inside' | 'outside' | 'both', action: 'start'): Promise<any> {
-    const pumpPath = pump === 'both' ? 'both' : pump;
-    return this.request(`/motor/pump/${pumpPath}/${action}`, {
+  // Note: 'both' is handled at the utility layer (pumpOperations.ts)
+  // This method only handles individual pumps
+  async startPump(pump: 'inside' | 'outside', action: 'start'): Promise<any> {
+    return this.request(`/motor/pump/${pump}/${action}`, {
       method: 'POST',
     });
   }
 
-  async stopPump(pump: 'inside' | 'outside' | 'both', action: 'stop'): Promise<any> {
-    const pumpPath = pump === 'both' ? 'both' : pump;
-    return this.request(`/motor/pump/${pumpPath}/${action}`, {
+  async stopPump(pump: 'inside' | 'outside', action: 'stop'): Promise<any> {
+    return this.request(`/motor/pump/${pump}/${action}`, {
       method: 'POST',
     });
   }
 
   // Trip Amount
-  async getTripAmount(customerId: string): Promise<TripAmountResponse> {
-    return this.request<TripAmountResponse>(`/party/trip-amount/${customerId}`);
+  async getTripAmount(customerId: string): Promise<number> {
+    return this.request(`/party/trip-amount/${customerId}`);
   }
 
-  // Local API endpoints (for development)
-  async authenticateLocal(credentials: AuthCredentials): Promise<AuthResponse> {
-    // Mock authentication for development
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        if (credentials.username === 'admin' && credentials.password === 'password') {
-          resolve({
-            success: true,
-            message: 'Login successful',
-            customerId: 'CUST001',
-          });
-        } else {
-          resolve({
-            success: false,
-            message: 'Invalid credentials',
-          });
-        }
-      }, 1000);
+  // Customer Registration
+  async registerCustomer(data: {
+    username: string;
+    password: string;
+    firstName: string;
+    lastName: string;
+    storageType: string;
+    tankerCapacity: number;
+    vehicleNumber: string;
+    address: string;
+    contactNumber: string;
+    location: string;
+  }): Promise<{ success: boolean; message: string }> {
+    return this.unauthenticatedRequest('/customer/register', {
+      method: 'POST',
+      body: JSON.stringify(data),
     });
   }
 
-  async getMotorStatusLocal(): Promise<MotorStatusResponse> {
-    // Mock motor status for development
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          pump_inside: { status: Math.random() > 0.5 ? 'ON' : 'OFF' },
-          pump_outside: { status: Math.random() > 0.5 ? 'ON' : 'OFF' },
-          water_level: ['LOW', 'MEDIUM', 'HIGH'][Math.floor(Math.random() * 3)] as any,
-          timestamp: Date.now(),
-        });
-      }, 500);
+  // Admin Customer Management
+  async getPendingCustomers(): Promise<PendingCustomer[]> {
+    return this.request('/admin/customers/pending', {
+      method: 'GET',
     });
   }
 
-  async getTripAmountLocal(customerId: string): Promise<TripAmountResponse> {
-    // Mock trip amount for development
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          amount: Math.floor(Math.random() * 1000) + 500,
-          currency: 'INR',
-        });
-      }, 300);
+  async getApprovedCustomers(): Promise<ApprovedCustomer[]> {
+    return this.request('/admin/customers', {
+      method: 'GET',
     });
+  }
+
+  async approveCustomer(customerId: number, adminId: number): Promise<{ success: boolean; message: string }> {
+    return this.request(`/admin/customers/${customerId}/approve?adminId=${adminId}`, {
+      method: 'POST',
+    });
+  }
+
+  async rejectCustomer(customerId: number, adminId: number): Promise<{ success: boolean; message: string }> {
+    return this.request(`/admin/customers/${customerId}/reject?adminId=${adminId}`, {
+      method: 'POST',
+    });
+  }
+
+  // Record Water Purchase Transaction
+  async recordTrip(customerId: string, tripAmount: number, pumpUsed: string): Promise<WaterPurchaseTransactionDTO> {
+    const queryParams = new URLSearchParams({
+      customerId: customerId,
+      tripAmount: tripAmount.toString(),
+      pumpUsed: pumpUsed
+    });
+    
+    return this.request<WaterPurchaseTransactionDTO>(`/party/record-trip?${queryParams.toString()}`, {
+      method: 'POST',
+    });
+  }
+
+  // Update Trip Stop Time
+  async updateTripTime(customerId: string, tripId: number): Promise<any> {
+    return this.request(
+      `/party/update-trip-time?customerId=${customerId}&tripId=${tripId}`,
+      { method: 'PUT' }
+    );
+  }
+
+  // Check Filling Status - returns customer ID if any filling is in progress
+  async checkFillingStatus(): Promise<number | null> {
+    return this.requestWithEmptyResponse<number>(
+      '/party/check-filling-status',
+      { method: 'GET' },
+      [204] // Return null for 204 No Content
+    );
+  }
+
+  // Get In-Progress Trip for a specific customer
+  async getInProgressTrip(customerId: number): Promise<ActiveTripStatus | null> {
+    return this.requestWithEmptyResponse<ActiveTripStatus>(
+      `/party/in-progress-trip/${customerId}`,
+      { method: 'GET' },
+      [204, 404] // Return null for 204 No Content or 404 Not Found
+    );
   }
 }
 

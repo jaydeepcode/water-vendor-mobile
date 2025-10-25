@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // Import types and services
 import {RootStackParamList, LoginProps, AuthCredentials} from '../types';
 import {apiService} from '../services/api';
+import {handleLoginError} from '../utils/errorHandler';
 
 type LoginScreenNavigationProp = NativeStackNavigationProp<
   RootStackParamList,
@@ -39,40 +40,42 @@ const LoginScreen: React.FC<Props> = ({navigation}) => {
 
     setLoading(true);
     try {
-      const credentials: AuthCredentials = {
-        username: username.trim(),
-        password: password.trim(),
-      };
-
-      // Try local authentication first for development
-      let response = await apiService.authenticateLocal(credentials);
-
-      // If local auth fails, try remote API
-      if (!response.success) {
-        response = await apiService.authenticate(credentials);
-      }
+      const response = await apiService.login(username.trim(), password.trim());
 
       if (response.success) {
-        // Store authentication data
-        await AsyncStorage.setItem('isLoggedIn', 'true');
-        if (response.customerId) {
-          await AsyncStorage.setItem('customerId', response.customerId);
+        // Check account status
+        if (response.accountStatus === 'PENDING') {
+          Alert.alert(
+            'Account Pending Approval',
+            'Your registration is under review. You will be notified once approved.',
+            [{text: 'OK'}]
+          );
+          return;
         }
-
-        // Navigate to dashboard
-        navigation.replace('Dashboard');
+        
+        // Store auth data
+        await AsyncStorage.setItem('isLoggedIn', 'true');
+        await AsyncStorage.setItem('apiKey', response.apiKey || '');
+        await AsyncStorage.setItem('userType', response.userType || '');
+        await AsyncStorage.setItem('userId', response.userId?.toString() || '');
+        await AsyncStorage.setItem('customerId', response.waterPartyId?.toString() || '');
+        await AsyncStorage.setItem('tankerCapacity', response.tankerCapacity?.toString() || '5000');
+        
+        // Navigate based on userType
+        if (response.userType === 'admin') {
+          navigation.replace('AdminDashboard');
+        } else {
+          navigation.replace('Dashboard');
+        }
       } else {
         Alert.alert('Login Failed', response.message || 'Invalid credentials');
       }
-    } catch (error) {
-      console.error('Login error:', error);
-      Alert.alert(
-        'Connection Error',
-        'Unable to connect to server. Please check your internet connection.',
-      );
-    } finally {
-      setLoading(false);
-    }
+      } catch (error) {
+        console.error('Login error:', error);
+        handleLoginError(error);
+      } finally {
+        setLoading(false);
+      }
   };
 
   return (
@@ -82,8 +85,8 @@ const LoginScreen: React.FC<Props> = ({navigation}) => {
       <View style={styles.content}>
         <View style={styles.logoContainer}>
           <Text style={styles.logoText}>💧</Text>
-          <Text style={styles.title}>Water Pump Controller</Text>
-          <Text style={styles.subtitle}>Smart Water Management System</Text>
+          <Text style={styles.title}>Mangale Services</Text>
+          <Text style={styles.subtitle}>Water Vendor Management System</Text>
         </View>
 
         <View style={styles.formContainer}>
@@ -120,11 +123,19 @@ const LoginScreen: React.FC<Props> = ({navigation}) => {
               <Text style={styles.loginButtonText}>Login</Text>
             )}
           </TouchableOpacity>
+
+          <TouchableOpacity 
+            onPress={() => navigation.navigate('CustomerRegistration')}
+            style={styles.registerLink}>
+            <Text style={styles.registerLinkText}>
+              Don't have an account? Register
+            </Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            For demo: username: admin, password: password
+          <Text style={styles.companyText}>
+            © 2024 Mangale Services. All rights reserved.
           </Text>
         </View>
       </View>
@@ -204,13 +215,22 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
   },
+  registerLink: {
+    marginTop: 16,
+    alignItems: 'center',
+  },
+  registerLinkText: {
+    color: '#007AFF',
+    fontSize: 16,
+    fontWeight: '500',
+  },
   footer: {
     marginTop: 20,
     alignItems: 'center',
   },
-  footerText: {
-    fontSize: 14,
-    color: '#666',
+  companyText: {
+    fontSize: 12,
+    color: '#999',
     textAlign: 'center',
   },
 });

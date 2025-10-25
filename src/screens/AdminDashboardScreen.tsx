@@ -12,38 +12,38 @@ import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Import types and services
-import {RootStackParamList, DashboardProps, MotorStatusResponse} from '../types';
+import {RootStackParamList, MotorStatusResponse} from '../types';
 import {apiService} from '../services/api';
 import {handleMotorStatusError} from '../utils/errorHandler';
 
-type DashboardScreenNavigationProp = NativeStackNavigationProp<
+type AdminDashboardScreenNavigationProp = NativeStackNavigationProp<
   RootStackParamList,
-  'Dashboard'
+  'AdminDashboard'
 >;
 
 interface Props {
-  navigation: DashboardScreenNavigationProp;
+  navigation: AdminDashboardScreenNavigationProp;
 }
 
-const DashboardScreen: React.FC<Props> = ({navigation}) => {
+const AdminDashboardScreen: React.FC<Props> = ({navigation}) => {
   const [motorStatus, setMotorStatus] = useState<MotorStatusResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [customerId, setCustomerId] = useState<string>('');
+  const [adminId, setAdminId] = useState<string>('');
 
   useEffect(() => {
-    loadCustomerData();
+    loadAdminData();
     fetchMotorStatus();
   }, []);
 
-  const loadCustomerData = async () => {
+  const loadAdminData = async () => {
     try {
-      const storedCustomerId = await AsyncStorage.getItem('customerId');
-      if (storedCustomerId) {
-        setCustomerId(storedCustomerId);
+      const storedAdminId = await AsyncStorage.getItem('adminId');
+      if (storedAdminId) {
+        setAdminId(storedAdminId);
       }
     } catch (error) {
-      console.error('Error loading customer data:', error);
+      console.error('Error loading admin data:', error);
     }
   };
 
@@ -91,7 +91,7 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
           onPress: async () => {
             try {
               await AsyncStorage.removeItem('isLoggedIn');
-              await AsyncStorage.removeItem('customerId');
+              await AsyncStorage.removeItem('adminId');
               navigation.replace('Login');
             } catch (error) {
               console.error('Error during logout:', error);
@@ -106,7 +106,6 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
     return status === 'ON' ? '#4CAF50' : '#FF5722';
   };
 
-
   return (
     <ScrollView
       style={styles.container}
@@ -115,14 +114,14 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
       }>
       <View style={styles.header}>
         <Text style={styles.welcomeText}>Mangale Services</Text>
-        <Text style={styles.subtitle}>Water Vendor Management Portal</Text>
-        {customerId && (
-          <Text style={styles.customerId}>Vendor ID: {customerId}</Text>
+        <Text style={styles.subtitle}>Administrator Portal</Text>
+        {adminId && (
+          <Text style={styles.adminId}>Admin ID: {adminId}</Text>
         )}
       </View>
 
       <View style={styles.statusContainer}>
-        <Text style={styles.sectionTitle}>Filling Station Status</Text>
+        <Text style={styles.sectionTitle}>System Status Overview</Text>
 
         {motorStatus ? (
           <View style={styles.statusGrid}>
@@ -147,42 +146,48 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
                 <Text style={styles.statusText}>{motorStatus.pump_outside.status}</Text>
               </View>
             </View>
-
           </View>
         ) : (
           <View style={styles.loadingContainer}>
             <Text style={styles.loadingText}>
-              {loading ? 'Loading motor status...' : 'No motor status available'}
+              {loading ? 'Loading system status...' : 'No system status available'}
             </Text>
           </View>
         )}
       </View>
 
-      <View style={styles.servicesContainer}>
-        <Text style={styles.sectionTitle}>Our Services</Text>
-        <Text style={styles.servicesSubtitle}>Choose from Mangale Services offerings</Text>
+      <View style={styles.adminServicesContainer}>
+        <Text style={styles.sectionTitle}>Administrator Services</Text>
+        <Text style={styles.servicesSubtitle}>Manage water pump operations</Text>
         
         <View style={styles.servicesGrid}>
           <TouchableOpacity
             style={styles.serviceButton}
-            onPress={() => navigation.navigate('PumpControl')}>
-            <Text style={styles.serviceIcon}>💧</Text>
-            <Text style={styles.serviceTitle}>Purchase Water</Text>
-            <Text style={styles.serviceDescription}>Access water filling stations and manage tanker operations</Text>
+            onPress={() => navigation.navigate('CustomerList')}>
+            <Text style={styles.serviceIcon}>🎛️</Text>
+            <Text style={styles.serviceTitle}>Control Water Pumps</Text>
+            <Text style={styles.serviceDescription}>Select and control customer water pumps remotely</Text>
           </TouchableOpacity>
           
           <TouchableOpacity
             style={[styles.serviceButton, styles.serviceButtonDisabled]}>
             <Text style={styles.serviceIcon}>📊</Text>
-            <Text style={styles.serviceTitle}>Analytics</Text>
-            <Text style={styles.serviceDescription}>Coming Soon - Usage reports and insights</Text>
+            <Text style={styles.serviceTitle}>System Analytics</Text>
+            <Text style={styles.serviceDescription}>Coming Soon - System usage reports and insights</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[styles.serviceButton, styles.serviceButtonDisabled]}>
+            <Text style={styles.serviceIcon}>👥</Text>
+            <Text style={styles.serviceTitle}>Customer Management</Text>
+            <Text style={styles.serviceDescription}>Coming Soon - Customer accounts and settings</Text>
           </TouchableOpacity>
           
           <TouchableOpacity
             style={[styles.serviceButton, styles.serviceButtonDisabled]}>
             <Text style={styles.serviceIcon}>⚙️</Text>
-            <Text style={styles.serviceTitle}>Settings</Text>
-            <Text style={styles.serviceDescription}>Coming Soon - Account and preferences</Text>
+            <Text style={styles.serviceTitle}>System Settings</Text>
+            <Text style={styles.serviceDescription}>Coming Soon - System configuration and preferences</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -202,7 +207,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
   },
   header: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#FF6B35',
     padding: 20,
     alignItems: 'center',
   },
@@ -218,7 +223,7 @@ const styles = StyleSheet.create({
     opacity: 0.9,
     marginBottom: 8,
   },
-  customerId: {
+  adminId: {
     fontSize: 14,
     color: '#fff',
     opacity: 0.8,
@@ -286,7 +291,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
   },
-  servicesContainer: {
+  adminServicesContainer: {
     padding: 16,
   },
   servicesSubtitle: {
@@ -322,7 +327,7 @@ const styles = StyleSheet.create({
   serviceTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#007AFF',
+    color: '#FF6B35',
     marginBottom: 8,
   },
   serviceDescription: {
@@ -348,4 +353,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default DashboardScreen;
+export default AdminDashboardScreen;

@@ -13,20 +13,26 @@ import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Import types and services
-import {RootStackParamList, PumpControlProps, MotorStatusResponse, ActiveTripStatus} from '../types';
+import {RootStackParamList, MotorStatusResponse, Customer} from '../types';
 import {apiService} from '../services/api';
 import {startPump, stopPump, PumpOperationCallbacks} from '../utils/pumpOperations';
 
-type PumpControlScreenNavigationProp = NativeStackNavigationProp<
+type AdminPumpControlScreenNavigationProp = NativeStackNavigationProp<
   RootStackParamList,
-  'PumpControl'
+  'AdminPumpControl'
 >;
 
 interface Props {
-  navigation: PumpControlScreenNavigationProp;
+  navigation: AdminPumpControlScreenNavigationProp;
+  route: {
+    params: {
+      customer: Customer;
+    };
+  };
 }
 
-const PumpControlScreen: React.FC<Props> = ({navigation}) => {
+const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
+  const { customer } = route.params;
   const [motorStatus, setMotorStatus] = useState<MotorStatusResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [pumpRunning, setPumpRunning] = useState<boolean>(false);
@@ -40,26 +46,20 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
   const [progressMessage, setProgressMessage] = useState<string>('');
   const [progressCountdown, setProgressCountdown] = useState<number>(0);
   const [purchaseId, setPurchaseId] = useState<number | null>(null);
-  const [tankerCapacity, setTankerCapacity] = useState<number>(5000); // Default value
-  const [estimatedTime, setEstimatedTime] = useState<number>(240); // Based on capacity
   const [activeFillingCustomerId, setActiveFillingCustomerId] = useState<number | null>(null);
-  const [activeFillingTrip, setActiveFillingTrip] = useState<ActiveTripStatus | null>(null);
-  const [currentCustomerId, setCurrentCustomerId] = useState<string | null>(null);
+  const [otherCustomerFilling, setOtherCustomerFilling] = useState<boolean>(false);
+  // Tanker capacity from customer registration data
+  const tankerCapacity = 5000; // Default fallback - should be passed from customer data
+  const [estimatedTime, setEstimatedTime] = useState<number>(240); // Based on capacity
 
   const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoStopTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fillingStatusInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    const initializeScreen = async () => {
-      await loadCurrentCustomer();
-      await loadTankerCapacity();
-      await checkAndRestoreActiveTrip();
-      fetchMotorStatus();
-      checkFillingStatus();
-    };
-    
-    initializeScreen();
+    fetchMotorStatus();
+    checkFillingStatus();
+    checkAndRestoreActiveTrip();
     
     // Poll filling status every 10 seconds
     fillingStatusInterval.current = setInterval(() => {
@@ -80,24 +80,42 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
     };
   }, []);
 
-  const loadCurrentCustomer = async () => {
-    try {
-      const customerId = await AsyncStorage.getItem('customerId');
-      setCurrentCustomerId(customerId);
-    } catch (error) {
-      console.error('Error loading customer ID:', error);
+  useEffect(() => {
+    if (pumpRunning && countdown > 0) {
+      countdownInterval.current = setInterval(() => {
+        setCountdown(prev => {
+          const newCountdown = prev - 1;
+        
+          // Show warning at 3 minutes (180 seconds) remaining
+          if (newCountdown === 180) {
+            handleAutoStopWarning();
+          }
+          
+          // Auto-stop at 0
+          if (newCountdown <= 0) {
+            handleStopPump();
+            return 0;
+          }
+          
+          return newCountdown;
+        });
+      }, 1000);
+    } else {
+      if (countdownInterval.current) {
+        clearInterval(countdownInterval.current);
+      }
     }
-  };
+
+    return () => {
+      if (countdownInterval.current) {
+        clearInterval(countdownInterval.current);
+      }
+    };
+  }, [pumpRunning, countdown]);
 
   const checkAndRestoreActiveTrip = async () => {
     try {
-      const customerId = await AsyncStorage.getItem('customerId');
-      if (!customerId) {
-        console.log('No customer ID found in storage');
-        return;
-      }
-      
-      const customerIdNum = parseInt(customerId);
+      const customerIdNum = parseInt(customer.id);
       console.log('Checking for active trip for customer:', customerIdNum);
       
       const activeTrip = await apiService.getInProgressTrip(customerIdNum);
@@ -141,71 +159,25 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
       const fillingCustomerId = await apiService.checkFillingStatus();
       setActiveFillingCustomerId(fillingCustomerId);
       
-      // If there's active filling, get details
-      if (fillingCustomerId !== null) {
-        const tripDetails = await apiService.getInProgressTrip(fillingCustomerId);
-        setActiveFillingTrip(tripDetails);
-      } else {
-        setActiveFillingTrip(null);
-      }
+      // Check if a different customer has active filling
+      const customerIdNum = parseInt(customer.id);
+      setOtherCustomerFilling(
+        fillingCustomerId !== null && fillingCustomerId !== customerIdNum
+      );
     } catch (error) {
       console.error('Error checking filling status:', error);
       setActiveFillingCustomerId(null);
-      setActiveFillingTrip(null);
+      setOtherCustomerFilling(false);
     }
   };
-
-  const loadTankerCapacity = async () => {
-    try {
-      const capacity = await AsyncStorage.getItem('tankerCapacity');
-      if (capacity) {
-        const parsedCapacity = parseInt(capacity);
-        setTankerCapacity(parsedCapacity);
-        // Update estimated time based on capacity (assuming 20L per minute flow rate)
-        setEstimatedTime(Math.ceil(parsedCapacity / 20 * 60));
-      }
-    } catch (error) {
-      console.error('Error loading tanker capacity:', error);
-    }
-  };
-
-  useEffect(() => {
-    if (pumpRunning && countdown > 0) {
-      countdownInterval.current = setInterval(() => {
-        setCountdown(prev => {
-          const newCountdown = prev - 1;
-        
-          // Show warning at 3 minutes (180 seconds) remaining
-          if (newCountdown === 180) {
-            handleAutoStopWarning();
-          }
-          
-          // Auto-stop at 0
-          if (newCountdown <= 0) {
-            handleStopPump();
-            return 0;
-          }
-          
-          return newCountdown;
-        });
-      }, 1000);
-    } else {
-      if (countdownInterval.current) {
-        clearInterval(countdownInterval.current);
-      }
-    }
-
-    return () => {
-      if (countdownInterval.current) {
-        clearInterval(countdownInterval.current);
-      }
-    };
-  }, [pumpRunning, countdown]);
 
   const fetchMotorStatus = async () => {
     try {
       setLoading(true);
+      // Try local API first for development
       let status = null;
+
+      // If local fails, try remote API
       try {
         status = await apiService.getMotorStatus();
       } catch (remoteError) {
@@ -231,67 +203,14 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
     }, 180000); // 3 minutes
   };
 
-  const isPumpAvailable = (pump: 'inside' | 'outside' | 'both'): boolean => {
-    if (!motorStatus) return false;
-    
-    // Check if current customer has active filling
-    const currentCustomerIdNum = currentCustomerId ? parseInt(currentCustomerId) : null;
-    const isCurrentCustomerFilling = activeFillingCustomerId === currentCustomerIdNum;
-    
-    // If current customer is filling, they can only stop
-    if (isCurrentCustomerFilling) {
-      return false;
-    }
-    
-    // If different customer is filling
-    if (activeFillingCustomerId !== null && !isCurrentCustomerFilling) {
-      const insideRunning = motorStatus.pump_inside.status === 'ON';
-      const outsideRunning = motorStatus.pump_outside.status === 'ON';
-      
-      // If both pumps running, nothing is available
-      if (insideRunning && outsideRunning) {
-        return false;
-      }
-      
-      // For 'both', need both pumps free
-      if (pump === 'both') {
-        return !insideRunning && !outsideRunning;
-      }
-      
-      // For single pump, check if that specific pump is free
-      if (pump === 'inside') {
-        return !insideRunning;
-      }
-      if (pump === 'outside') {
-        return !outsideRunning;
-      }
-    }
-    
-    // No one is filling, all pumps available
-    return true;
-  };
-
   const handleStartPump = async (pump: 'inside' | 'outside' | 'both') => {
-    // Check pump availability
-    if (!isPumpAvailable(pump)) {
-      const currentCustomerIdNum = currentCustomerId ? parseInt(currentCustomerId) : null;
-      const isCurrentCustomerFilling = activeFillingCustomerId === currentCustomerIdNum;
-      
-      if (isCurrentCustomerFilling) {
-        Alert.alert(
-          'Filling in Progress',
-          'You already have an active filling operation. Please stop it before starting a new one.',
-          [{ text: 'OK' }]
-        );
-      } else {
-        Alert.alert(
-          'Pump Not Available',
-          activeFillingTrip 
-            ? `${pump === 'both' ? 'Both pumps are' : 'This pump is'} currently in use by another customer.`
-            : 'This pump is currently in use. Please try again later.',
-          [{ text: 'OK' }]
-        );
-      }
+    // Check if another customer has filling in progress
+    if (otherCustomerFilling) {
+      Alert.alert(
+        'Pump In Use',
+        'Another customer is currently filling water. Please wait until their filling is complete before starting a new operation.',
+        [{ text: 'OK' }]
+      );
       return;
     }
     
@@ -330,37 +249,28 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
   const confirmCockPosition = async () => {
     if (!selectedPump) return;
 
-    const customerId = await AsyncStorage.getItem('customerId');
-    if (!customerId) {
-      Alert.alert('Error', 'Customer ID not found');
-      setLoading(false);
-      return;
-    }
-
     const callbacks: PumpOperationCallbacks = {
       onStartSuccess: async () => {
         setPumpRunning(true);
         setCountdown(estimatedTime); // Use calculated time
         setAutoStopWarning(false);
         setShowProgressModal(false);
-        Alert.alert('Success', `Filling station ${selectedPump} started successfully`);
+        Alert.alert('Success', `Filling station ${selectedPump} started successfully for ${customer.name}`);
         fetchMotorStatus(); // Refresh status
         
         // Record transaction after successful pump start
-        if (customerId) {
-          try {
-            const tripAmount = await apiService.getTripAmount(customerId);
-            console.log(`Trip amount for customer ${customerId}:`, tripAmount);
-            
-            if (tripAmount !== undefined && tripAmount !== null) {
-              const transaction = await apiService.recordTrip(customerId, tripAmount, selectedPump);
-              console.log(`Transaction recorded for customer ${customerId}:`, transaction);
-              setPurchaseId(transaction.purchaseId);
-            }
-          } catch (error) {
-            console.log('Could not record transaction:', error);
-            // Don't fail the pump start if transaction recording fails
+        try {
+          const tripAmount = await apiService.getTripAmount(customer.id);
+          console.log(`Trip amount for customer ${customer.id}:`, tripAmount);
+          
+          if (tripAmount !== undefined && tripAmount !== null) {
+            const transaction = await apiService.recordTrip(customer.id, tripAmount, selectedPump);
+            console.log(`Transaction recorded for customer ${customer.id}:`, transaction);
+            setPurchaseId(transaction.purchaseId);
           }
+        } catch (error) {
+          console.log('Could not record transaction:', error);
+          // Don't fail the pump start if transaction recording fails
         }
       },
       onStopSuccess: () => {
@@ -388,7 +298,7 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
     };
 
     try {
-      await startPump(selectedPump, customerId, callbacks);
+      await startPump(selectedPump, customer.id, callbacks);
     } catch (error) {
       // Error handling is done in callbacks
     }
@@ -415,15 +325,14 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
           clearTimeout(autoStopTimeout.current);
         }
 
-        Alert.alert('Success', 'Pump stopped successfully');
+        Alert.alert('Success', `Pump stopped successfully for ${customer.name}`);
         fetchMotorStatus(); // Refresh status
         
         // Update trip stop time if purchaseId exists
-        const customerId = await AsyncStorage.getItem('customerId');
-        if (customerId && purchaseId) {
+        if (purchaseId) {
           try {
-            await apiService.updateTripTime(customerId, purchaseId);
-            console.log(`Trip stop time updated for customer ${customerId}, purchaseId ${purchaseId}`);
+            await apiService.updateTripTime(customer.id, purchaseId);
+            console.log(`Trip stop time updated for customer ${customer.id}, purchaseId ${purchaseId}`);
           } catch (error) {
             console.log('Could not update trip stop time:', error);
           }
@@ -461,44 +370,31 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
     return status === 'ON' ? '#4CAF50' : '#FF5722';
   };
 
-
-  const getFillingStatusMessage = (): string | null => {
-    if (!activeFillingCustomerId || !motorStatus) return null;
-    
-    const currentCustomerIdNum = currentCustomerId ? parseInt(currentCustomerId) : null;
-    const isCurrentCustomerFilling = activeFillingCustomerId === currentCustomerIdNum;
-    
-    if (isCurrentCustomerFilling) {
-      return null; // Don't show banner for current user's filling
-    }
-    
-    const insideRunning = motorStatus.pump_inside.status === 'ON';
-    const outsideRunning = motorStatus.pump_outside.status === 'ON';
-    
-    if (insideRunning && outsideRunning) {
-      return 'Both pumps are currently in use by another customer';
-    } else if (insideRunning) {
-      return 'Station 1 (Inside) is in use - Station 2 (Outside) is available';
-    } else if (outsideRunning) {
-      return 'Station 2 (Outside) is in use - Station 1 (Inside) is available';
-    }
-    
-    return null;
+  const handleBackToCustomerList = () => {
+    navigation.goBack();
   };
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Pump Control</Text>
-        <Text style={styles.subtitle}>Control tanker filling operations</Text>
+        <TouchableOpacity style={styles.backButton} onPress={handleBackToCustomerList}>
+          <Text style={styles.backButtonText}>← Back</Text>
+        </TouchableOpacity>
+        <View style={styles.headerContent}>
+          <Text style={styles.title}>Admin Pump Control</Text>
+          <Text style={styles.subtitle}>Controlling: {customer.name}</Text>
+          <Text style={styles.customerId}>Customer ID: {customer.id}</Text>
+        </View>
       </View>
 
-      {getFillingStatusMessage() && (
-        <View style={styles.infoBanner}>
-          <Text style={styles.infoIcon}>ℹ️</Text>
-          <View style={styles.infoTextContainer}>
-            <Text style={styles.infoTitle}>Pump Status</Text>
-            <Text style={styles.infoText}>{getFillingStatusMessage()}</Text>
+      {otherCustomerFilling && (
+        <View style={styles.warningBanner}>
+          <Text style={styles.warningIcon}>⚠️</Text>
+          <View style={styles.warningTextContainer}>
+            <Text style={styles.warningTitle}>Another Customer Filling</Text>
+            <Text style={styles.warningText}>
+              Cannot start new filling operation while another customer is using the pump.
+            </Text>
           </View>
         </View>
       )}
@@ -529,11 +425,10 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
                 <Text style={styles.statusText}>{motorStatus.pump_outside.status}</Text>
               </View>
             </View>
-
           </View>
         ) : (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#007AFF" />
+            <ActivityIndicator size="large" color="#FF6B35" />
             <Text style={styles.loadingText}>Loading motor status...</Text>
           </View>
         )}
@@ -545,6 +440,7 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
             <Text style={styles.runningText}>
               Filling Station {selectedPump === 'both' ? '1 & 2' : selectedPump} is running
             </Text>
+            <Text style={styles.customerRunningText}>for {customer.name}</Text>
             <View style={styles.timeTrackerContainer}>
               <Text style={styles.timerText}>
                 Time remaining: {formatTime(countdown)}
@@ -572,57 +468,48 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
           <View style={styles.startContainer}>
             <Text style={styles.startTitle}>Start Tanker Filling</Text>
             <Text style={styles.startSubtitle}>Choose which filling station to use</Text>
-
+            <Text style={styles.customerInfo}>Customer: {customer.name}</Text>
 
             <View style={styles.buttonGrid}>
               <View style={styles.stationButtonsRow}>
                 <TouchableOpacity
                   style={[
                     styles.stationButton,
-                    !isPumpAvailable('inside') && styles.disabledButton
+                    otherCustomerFilling && styles.disabledButton
                   ]}
                   onPress={() => handleStartPump('inside')}
-                  disabled={loading || !isPumpAvailable('inside')}>
+                  disabled={loading || otherCustomerFilling}>
                   <Text style={[
                     styles.stationButtonText,
-                    !isPumpAvailable('inside') && styles.disabledButtonText
+                    otherCustomerFilling && styles.disabledButtonText
                   ]}>Station 1</Text>
-                  {!isPumpAvailable('inside') && (
-                    <Text style={styles.disabledHint}>In Use</Text>
-                  )}
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={[
                     styles.stationButton,
-                    !isPumpAvailable('outside') && styles.disabledButton
+                    otherCustomerFilling && styles.disabledButton
                   ]}
                   onPress={() => handleStartPump('outside')}
-                  disabled={loading || !isPumpAvailable('outside')}>
+                  disabled={loading || otherCustomerFilling}>
                   <Text style={[
                     styles.stationButtonText,
-                    !isPumpAvailable('outside') && styles.disabledButtonText
+                    otherCustomerFilling && styles.disabledButtonText
                   ]}>Station 2</Text>
-                  {!isPumpAvailable('outside') && (
-                    <Text style={styles.disabledHint}>In Use</Text>
-                  )}
                 </TouchableOpacity>
               </View>
 
               <TouchableOpacity
                 style={[
                   styles.bothStationsButton,
-                  !isPumpAvailable('both') && styles.disabledBothButton
+                  otherCustomerFilling && styles.disabledBothButton
                 ]}
                 onPress={() => handleStartPump('both')}
-                disabled={loading || !isPumpAvailable('both')}>
+                disabled={loading || otherCustomerFilling}>
                 <Text style={[
                   styles.bothStationsButtonText,
-                  !isPumpAvailable('both') && styles.disabledButtonText
+                  otherCustomerFilling && styles.disabledButtonText
                 ]}>Start Both Stations</Text>
-                {!isPumpAvailable('both') && (
-                  <Text style={styles.disabledHint}>Not Available</Text>
-                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -639,10 +526,10 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Confirm Start</Text>
             <Text style={styles.modalText}>
-              Do you really want to start the water filling operation at {selectedPump === 'both' ? 'both stations' : `station ${selectedPump}`}?
+              Do you really want to start the water filling operation at {selectedPump === 'both' ? 'both stations' : `station ${selectedPump}`} for {customer.name}?
             </Text>
             <Text style={styles.modalSubtext}>
-              This will run for approximately {formatTime(estimatedTime)} to fill your {tankerCapacity}L tanker.
+              This will run for approximately {formatTime(estimatedTime)} to fill their {tankerCapacity}L tanker.
             </Text>
 
             <View style={styles.modalButtons}>
@@ -672,7 +559,7 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Confirm Stop</Text>
             <Text style={styles.modalText}>
-              Are you sure you want to stop filling at {selectedPump === 'both' ? 'both stations' : `station ${selectedPump}`}?
+              Are you sure you want to stop filling at {selectedPump === 'both' ? 'both stations' : `station ${selectedPump}`} for {customer.name}?
             </Text>
 
             <View style={styles.modalButtons}>
@@ -702,10 +589,10 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Cock Position Confirmation</Text>
             <Text style={styles.modalText}>
-              Please confirm that the yellow cock is turned to route water to the tanker pipe (not to the storage tank inside).
+              Please confirm that the yellow cock is turned to route water to the tanker pipe (not to the storage tank inside) for {customer.name}.
             </Text>
             <Text style={styles.modalSubtext}>
-              This ensures water flows to your tanker and not to internal storage.
+              This ensures water flows to their tanker and not to internal storage.
             </Text>
 
             <View style={styles.modalButtons}>
@@ -738,7 +625,7 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Auto-Stop Warning</Text>
             <Text style={styles.modalText}>
-              The filling operation has been running for 3 minutes. It will automatically stop in 1 minute.
+              The filling operation for {customer.name} has been running for 3 minutes. It will automatically stop in 1 minute.
             </Text>
             <Text style={styles.modalSubtext}>
               You can stop it now or let it continue to complete the tanker filling.
@@ -771,7 +658,7 @@ const PumpControlScreen: React.FC<Props> = ({navigation}) => {
         animationType="fade">
         <View style={styles.progressModalOverlay}>
           <View style={styles.progressModalContent}>
-            <ActivityIndicator size="large" color="#007AFF" />
+            <ActivityIndicator size="large" color="#FF6B35" />
             <Text style={styles.progressMessage}>{progressMessage}</Text>
             {progressCountdown > 0 && (
               <Text style={styles.progressCountdown}>{progressCountdown}s</Text>
@@ -789,8 +676,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
   },
   header: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#FF6B35',
     padding: 20,
+    paddingTop: 10,
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    marginBottom: 10,
+  },
+  backButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  headerContent: {
     alignItems: 'center',
   },
   title: {
@@ -803,6 +702,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#fff',
     opacity: 0.9,
+    marginBottom: 4,
+  },
+  customerId: {
+    fontSize: 14,
+    color: '#fff',
+    opacity: 0.8,
   },
   statusContainer: {
     backgroundColor: '#fff',
@@ -890,6 +795,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     color: '#4CAF50',
+    marginBottom: 4,
+  },
+  customerRunningText: {
+    fontSize: 16,
+    color: '#666',
     marginBottom: 8,
   },
   timeTrackerContainer: {
@@ -947,6 +857,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
     textAlign: 'center',
+    marginBottom: 8,
+  },
+  customerInfo: {
+    fontSize: 14,
+    color: '#FF6B35',
+    textAlign: 'center',
+    fontWeight: '600',
     marginBottom: 20,
   },
   buttonGrid: {
@@ -958,7 +875,7 @@ const styles = StyleSheet.create({
   },
   stationButton: {
     flex: 1,
-    backgroundColor: '#007AFF',
+    backgroundColor: '#FF6B35',
     borderRadius: 8,
     padding: 16,
     alignItems: 'center',
@@ -1031,7 +948,7 @@ const styles = StyleSheet.create({
   },
   modalConfirmButton: {
     flex: 1,
-    backgroundColor: '#007AFF',
+    backgroundColor: '#FF6B35',
     borderRadius: 8,
     padding: 16,
     alignItems: 'center',
@@ -1066,13 +983,13 @@ const styles = StyleSheet.create({
   progressCountdown: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#007AFF',
+    color: '#FF6B35',
     textAlign: 'center',
   },
-  infoBanner: {
-    backgroundColor: '#E3F2FD',
+  warningBanner: {
+    backgroundColor: '#FFF3CD',
     borderLeftWidth: 4,
-    borderLeftColor: '#2196F3',
+    borderLeftColor: '#FFC107',
     padding: 12,
     marginHorizontal: 16,
     marginTop: 16,
@@ -1080,22 +997,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  infoIcon: {
+  warningIcon: {
     fontSize: 24,
     marginRight: 12,
   },
-  infoTextContainer: {
+  warningTextContainer: {
     flex: 1,
   },
-  infoTitle: {
+  warningTitle: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#1976D2',
+    color: '#856404',
     marginBottom: 4,
   },
-  infoText: {
+  warningText: {
     fontSize: 12,
-    color: '#1976D2',
+    color: '#856404',
   },
   disabledButton: {
     backgroundColor: '#CCCCCC',
@@ -1108,12 +1025,6 @@ const styles = StyleSheet.create({
   disabledButtonText: {
     color: '#666666',
   },
-  disabledHint: {
-    fontSize: 10,
-    color: '#666666',
-    marginTop: 4,
-    fontStyle: 'italic',
-  },
 });
 
-export default PumpControlScreen;
+export default AdminPumpControlScreen;
