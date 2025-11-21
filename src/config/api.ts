@@ -1,7 +1,7 @@
 // API Configuration
 export const API_CONFIG = {
-  LOCAL_BASE_URL: 'http://192.168.1.39:8080/api',
-  PRODUCTION_BASE_URL: 'https://api.yourdomain.com/api',
+  LOCAL_BASE_URL: 'http://192.168.1.100:8080/api',
+  PRODUCTION_BASE_URL: 'https://api.connectsattva.in/api',
 };
 
 // Get the appropriate base URL based on environment

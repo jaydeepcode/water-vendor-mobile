@@ -9,7 +9,11 @@ import {
   PendingCustomer,
   ApprovedCustomer,
   WaterPurchaseTransactionDTO,
-  ActiveTripStatus
+  ActiveTripStatus,
+  CheckMobileResponse,
+  CreditBalanceResponse,
+  CustomerWithCreditPointsDTO,
+  CustomerSearchResult
 } from '../types';
 
 class ApiService {
@@ -184,7 +188,14 @@ class ApiService {
   }
 
   // Customer Registration
+  async checkMobileNumber(mobile: string): Promise<CheckMobileResponse> {
+    return this.unauthenticatedRequest<CheckMobileResponse>(`/customer/check-mobile?mobile=${mobile}`, {
+      method: 'GET',
+    });
+  }
+
   async registerCustomer(data: {
+    customerId?: number | null;
     username: string;
     password: string;
     firstName: string;
@@ -264,6 +275,47 @@ class ApiService {
       { method: 'GET' },
       [204, 404] // Return null for 204 No Content or 404 Not Found
     );
+  }
+
+  // Get Credit Balance (Credit Points and Balance Amount)
+  async getCreditBalance(customerId: string): Promise<CreditBalanceResponse> {
+    return this.request<CreditBalanceResponse>(`/party/credit-balance/${customerId}`);
+  }
+
+  // Get Pending Trips (unpaid trips after last zero balance)
+  async getPendingTrips(customerId: number): Promise<ActiveTripStatus[]> {
+    return this.request<ActiveTripStatus[]>(`/party/pending-trips/${customerId}`);
+  }
+
+  // Get Customers with Credit Points (top 6 customers)
+  async getCustomersWithCreditPoints(): Promise<CustomerWithCreditPointsDTO[]> {
+    return this.request<CustomerWithCreditPointsDTO[]>('/party/customers-with-credit-points');
+  }
+
+  // Search Customers by name
+  async searchCustomers(query: string): Promise<CustomerSearchResult[]> {
+    try {
+      // The backend returns CustomerDetails, we need to map it to CustomerSearchResult
+      const results = await this.request<any[]>(`/customers/search?customerName=${encodeURIComponent(query)}`);
+      
+      // Map the response to CustomerSearchResult format
+      // Note: The backend CustomerDetails may not have all fields, so we map what's available
+      return results.map((customer: any) => ({
+        customerId: customer.custId || customer.id,
+        customerName: customer.firstName && customer.lastName 
+          ? `${customer.firstName} ${customer.lastName}` 
+          : customer.customerName || customer.name || '',
+        contactNumber: customer.contactNum || customer.contactNumber || '',
+        storageType: customer.storageType || '',
+        capacity: customer.capacity || 0,
+        address: customer.address || '',
+        creditPoints: customer.creditPoints,
+        hasActiveTrip: customer.hasActiveTrip
+      }));
+    } catch (error) {
+      console.error('Error searching customers:', error);
+      throw error;
+    }
   }
 }
 

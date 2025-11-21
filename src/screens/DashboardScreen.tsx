@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useState, useCallback} from 'react';
 import {
   View,
   Text,
@@ -9,10 +9,11 @@ import {
   ScrollView,
 } from 'react-native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
+import {useFocusEffect} from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Import types and services
-import {RootStackParamList, DashboardProps, MotorStatusResponse} from '../types';
+import {RootStackParamList, DashboardProps, MotorStatusResponse, CreditBalanceResponse} from '../types';
 import {apiService} from '../services/api';
 import {handleMotorStatusError} from '../utils/errorHandler';
 
@@ -30,11 +31,30 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
   const [loading, setLoading] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [customerId, setCustomerId] = useState<string>('');
+  const [creditBalance, setCreditBalance] = useState<CreditBalanceResponse | null>(null);
 
   useEffect(() => {
     loadCustomerData();
-    fetchMotorStatus();
   }, []);
+
+  useEffect(() => {
+    if (customerId) {
+      fetchMotorStatus();
+      fetchCreditBalance();
+    }
+  }, [customerId]);
+
+  // Refresh credit balance when screen comes into focus (e.g., navigating back from PumpControl)
+  // This ensures the credit information is always up-to-date after pump operations
+  useFocusEffect(
+    useCallback(() => {
+      if (customerId) {
+        // Silently refresh credit balance in the background without showing loading indicator
+        fetchCreditBalance();
+        fetchMotorStatus();
+      }
+    }, [customerId])
+  );
 
   const loadCustomerData = async () => {
     try {
@@ -74,6 +94,79 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
   const onRefresh = () => {
     setRefreshing(true);
     fetchMotorStatus();
+    fetchCreditBalance();
+  };
+
+  const fetchCreditBalance = async () => {
+    if (!customerId) return;
+    try {
+      const balance = await apiService.getCreditBalance(customerId);
+      setCreditBalance(balance);
+    } catch (error) {
+      console.error('Error fetching credit balance:', error);
+    }
+  };
+
+  const getCreditPointsColor = (creditPoints: number): string => {
+    // Color scheme:
+    // creditPoints <= -1 → Green (advance balance - customer has credit)
+    // creditPoints == 0 → Blue (zero balance)
+    // creditPoints > 0 → Red (customer owes money - pending trips)
+    if (creditPoints <= -1) {
+      return '#4CAF50'; // Green - advance balance present
+    } else if (creditPoints === 0) {
+      return '#2196F3'; // Blue - zero balance
+    } else {
+      // creditPoints > 0
+      return '#F44336'; // Red - customer owes money (pending trips)
+    }
+  };
+
+  const handlePurchaseWater = () => {
+    if (!creditBalance) {
+      // If no credit balance data, block access
+      Alert.alert(
+        'Account Information Unavailable',
+        'Unable to verify your account balance. Please try again later.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    // Allow access if active trip exists (so they can stop it)
+    // Check explicitly for true (handles undefined/null cases)
+    // Also handle string "true" case in case backend sends it as string (type assertion for edge cases)
+    const hasActiveTripValue: any = creditBalance.hasActiveTrip;
+    const hasActiveTrip = hasActiveTripValue === true || 
+                          (typeof hasActiveTripValue === 'string' && hasActiveTripValue.toLowerCase() === 'true');
+    
+    if (hasActiveTrip) {
+      navigation.navigate('PumpControl');
+      return;
+    }
+
+    // Allow access ONLY when creditPoints <= -1 (advance balance present - business owes customer)
+    if (creditBalance.creditPoints <= -1) {
+      navigation.navigate('PumpControl');
+      return;
+    }
+
+    // Block access for all other cases
+    if (creditBalance.creditPoints > 0) {
+      // Customer owes money
+      Alert.alert(
+        'Outstanding Balance',
+        `You have ${creditBalance.creditPoints} pending trip(s) with an outstanding balance of ₹${creditBalance.balanceAmount.toFixed(2)}. Please update your balance to continue water access.`,
+        [{ text: 'OK' }]
+      );
+    } else {
+      // Zero balance (creditPoints === 0)
+      Alert.alert(
+        'Zero Balance',
+        'Your account balance is zero. Please update your balance to continue water access.',
+        [{ text: 'OK' }]
+      );
+    }
   };
 
   const handleLogout = async () => {
@@ -106,6 +199,14 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
     return status === 'ON' ? '#4CAF50' : '#FF5722';
   };
 
+  const showStatusAlert = (stationName: string, status: string) => {
+    Alert.alert(
+      stationName,
+      `Status: ${status}`,
+      [{ text: 'OK' }]
+    );
+  };
+
 
   return (
     <ScrollView
@@ -121,39 +222,90 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
         )}
       </View>
 
-      <View style={styles.statusContainer}>
-        <Text style={styles.sectionTitle}>Filling Station Status</Text>
-
-        {motorStatus ? (
-          <View style={styles.statusGrid}>
-            <View style={styles.statusCard}>
-              <Text style={styles.statusLabel}>Filling Station 1</Text>
-              <View
-                style={[
-                  styles.statusIndicator,
-                  {backgroundColor: getStatusColor(motorStatus.pump_inside.status)},
+      <View style={styles.creditPointsRow}>
+        {creditBalance && (
+          <View style={[
+            styles.creditPointsContainer,
+            { borderLeftColor: getCreditPointsColor(creditBalance.creditPoints) }
+          ]}>
+            {creditBalance.creditPoints > 0 ? (
+              <>
+                <Text style={styles.creditPointsLabel}>Pending Trips</Text>
+                <Text style={[
+                  styles.creditPointsValue,
+                  { color: getCreditPointsColor(creditBalance.creditPoints) }
                 ]}>
-                <Text style={styles.statusText}>{motorStatus.pump_inside.status}</Text>
-              </View>
-            </View>
-
-            <View style={styles.statusCard}>
-              <Text style={styles.statusLabel}>Filling Station 2</Text>
-              <View
-                style={[
-                  styles.statusIndicator,
-                  {backgroundColor: getStatusColor(motorStatus.pump_outside.status)},
+                  {creditBalance.creditPoints}
+                </Text>
+                <Text style={styles.balanceLabel}>
+                  Outstanding Balance: ₹{creditBalance.balanceAmount.toFixed(2)}
+                </Text>
+                <Text style={styles.statusHint}>
+                  {creditBalance.creditPoints} unpaid trip{creditBalance.creditPoints !== 1 ? 's' : ''} pending
+                </Text>
+              </>
+            ) : creditBalance.creditPoints < 0 ? (
+              <>
+                <Text style={styles.creditPointsLabel}>Available Credit</Text>
+                <Text style={[
+                  styles.creditPointsValue,
+                  { color: getCreditPointsColor(creditBalance.creditPoints) }
                 ]}>
-                <Text style={styles.statusText}>{motorStatus.pump_outside.status}</Text>
-              </View>
-            </View>
-
+                  {Math.abs(creditBalance.creditPoints)}
+                </Text>
+                <Text style={styles.balanceLabel}>
+                  Advance Balance: ₹{Math.abs(creditBalance.balanceAmount).toFixed(2)}
+                </Text>
+                <Text style={styles.statusHint}>
+                  {Math.abs(creditBalance.creditPoints)} trip{Math.abs(creditBalance.creditPoints) !== 1 ? 's' : ''} available
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.creditPointsLabel}>Account Balance</Text>
+                <Text style={[
+                  styles.creditPointsValue,
+                  { color: getCreditPointsColor(creditBalance.creditPoints) }
+                ]}>
+                  0
+                </Text>
+                <Text style={styles.balanceLabel}>
+                  Current Balance: ₹{creditBalance.balanceAmount.toFixed(2)}
+                </Text>
+                <Text style={styles.statusHint}>No pending trips</Text>
+              </>
+            )}
           </View>
-        ) : (
-          <View style={styles.loadingContainer}>
-            <Text style={styles.loadingText}>
-              {loading ? 'Loading motor status...' : 'No motor status available'}
-            </Text>
+        )}
+
+        {motorStatus && (
+          <View style={styles.statusIconsContainer}>
+            <TouchableOpacity
+              style={styles.statusIconWrapper}
+              onPress={() => showStatusAlert('Filling Station 1 (Inside)', motorStatus.pump_inside.status)}>
+              <View style={[
+                styles.statusIconContainer,
+                { borderColor: getStatusColor(motorStatus.pump_inside.status) }
+              ]}>
+                <Text style={styles.statusIcon}>
+                  ⚙️
+                </Text>
+              </View>
+              <Text style={styles.statusIconLabel}>Inside</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.statusIconWrapper}
+              onPress={() => showStatusAlert('Filling Station 2 (Outside)', motorStatus.pump_outside.status)}>
+              <View style={[
+                styles.statusIconContainer,
+                { borderColor: getStatusColor(motorStatus.pump_outside.status) }
+              ]}>
+                <Text style={styles.statusIcon}>
+                  ⚙️
+                </Text>
+              </View>
+              <Text style={styles.statusIconLabel}>Outside</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -165,7 +317,7 @@ const DashboardScreen: React.FC<Props> = ({navigation}) => {
         <View style={styles.servicesGrid}>
           <TouchableOpacity
             style={styles.serviceButton}
-            onPress={() => navigation.navigate('PumpControl')}>
+            onPress={handlePurchaseWater}>
             <Text style={styles.serviceIcon}>💧</Text>
             <Text style={styles.serviceTitle}>Purchase Water</Text>
             <Text style={styles.serviceDescription}>Access water filling stations and manage tanker operations</Text>
@@ -223,11 +375,18 @@ const styles = StyleSheet.create({
     color: '#fff',
     opacity: 0.8,
   },
-  statusContainer: {
-    backgroundColor: '#fff',
+  creditPointsRow: {
+    flexDirection: 'row',
     margin: 16,
+    marginTop: 16,
+    gap: 12,
+  },
+  creditPointsContainer: {
+    flex: 1,
+    backgroundColor: '#fff',
     borderRadius: 12,
     padding: 20,
+    borderLeftWidth: 4,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -237,54 +396,72 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 16,
-  },
-  statusGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  statusCard: {
-    flex: 1,
-    alignItems: 'center',
-    marginHorizontal: 8,
-  },
-  statusLabel: {
+  creditPointsLabel: {
     fontSize: 14,
     color: '#666',
     marginBottom: 8,
-    textAlign: 'center',
   },
-  statusIndicator: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+  creditPointsValue: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  balanceLabel: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 4,
+  },
+  statusHint: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  statusIconsContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
     justifyContent: 'center',
     alignItems: 'center',
+    flexDirection: 'column',
+    gap: 12,
+    minWidth: 70,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
       height: 2,
     },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.1,
     shadowRadius: 4,
-    elevation: 4,
+    elevation: 3,
   },
-  statusText: {
-    color: '#fff',
+  statusIconWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statusIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 3,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f9f9f9',
+  },
+  statusIcon: {
+    fontSize: 24,
+  },
+  statusIconLabel: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 4,
+  },
+  sectionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    padding: 20,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: '#666',
+    color: '#333',
+    marginBottom: 12,
   },
   servicesContainer: {
     padding: 16,

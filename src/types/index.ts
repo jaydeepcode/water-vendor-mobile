@@ -54,6 +54,7 @@ export interface Customer {
   status: 'active' | 'inactive';
   pumpAvailable: boolean;
   lastUsed: string;
+  capacity?: number; // Tanker capacity in liters
 }
 
 // Backend Customer Interfaces
@@ -96,6 +97,23 @@ export interface ActiveTripStatus {
   tripStatus?: 'FILLING' | 'COMPLETED'; // Backend returns 'tripStatus'
 }
 
+// Check Mobile Response Types
+export interface CheckMobileResponse {
+  success: boolean;
+  custId?: number;
+  firstName?: string;
+  lastName?: string;
+  contactNum?: string;
+  email?: string;
+  hasUserAccount?: boolean;
+  storageType?: string;
+  capacity?: number;
+  vehicleNumber?: string;
+  address?: string;
+  location?: string;
+  message?: string;
+}
+
 // Component Props Types
 export interface PumpControlProps {
   navigation: any;
@@ -107,4 +125,33 @@ export interface LoginProps {
 
 export interface DashboardProps {
   navigation: any;
+}
+
+// Credit Balance Response
+export interface CreditBalanceResponse {
+  balanceAmount: number;
+  creditPoints: number;
+  hasActiveTrip?: boolean;
+}
+
+// Customer with Credit Points DTO
+export interface CustomerWithCreditPointsDTO {
+  custId: number;
+  customerName: string;
+  contactNum: string;
+  creditPoints: number;  // Can be positive, negative, or zero
+  balanceAmount: number;
+  hasActiveTrip: boolean;
+}
+
+// Customer Search Result
+export interface CustomerSearchResult {
+  customerId: number;
+  customerName: string;
+  contactNumber: string;
+  storageType: string;
+  capacity: number;
+  address: string;
+  creditPoints?: number;  // Optional, may not be available in search
+  hasActiveTrip?: boolean;
 }

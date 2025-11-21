@@ -48,8 +48,8 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
   const [purchaseId, setPurchaseId] = useState<number | null>(null);
   const [activeFillingCustomerId, setActiveFillingCustomerId] = useState<number | null>(null);
   const [otherCustomerFilling, setOtherCustomerFilling] = useState<boolean>(false);
-  // Tanker capacity from customer registration data
-  const tankerCapacity = 5000; // Default fallback - should be passed from customer data
+  // Tanker capacity from customer data passed from CustomerListScreen
+  const tankerCapacity = customer.capacity || 5000; // Use customer capacity or default fallback
   const [estimatedTime, setEstimatedTime] = useState<number>(240); // Based on capacity
 
   const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -60,6 +60,10 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
     fetchMotorStatus();
     checkFillingStatus();
     checkAndRestoreActiveTrip();
+    
+    // Calculate estimated time based on tanker capacity
+    const timePerLiter = 0.58; // 48 seconds per liter (approximate)
+    setEstimatedTime(Math.ceil(tankerCapacity * timePerLiter));
     
     // Poll filling status every 10 seconds
     fillingStatusInterval.current = setInterval(() => {
