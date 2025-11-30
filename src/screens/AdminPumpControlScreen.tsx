@@ -1,4 +1,4 @@
-import React, {useEffect, useState, useRef} from 'react';
+import React, {useEffect, useState, useRef, useCallback} from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {RootStackParamList, MotorStatusResponse, Customer} from '../types';
 import {apiService} from '../services/api';
 import {startPump, stopPump, PumpOperationCallbacks} from '../utils/pumpOperations';
+import {useEstimatedTime} from '../hooks/useEstimatedTime';
+import {useSmartPolling} from '../hooks/useSmartPolling';
+import {useCountdownTimer} from '../hooks/useCountdownTimer';
 
 type AdminPumpControlScreenNavigationProp = NativeStackNavigationProp<
   RootStackParamList,
@@ -40,8 +43,6 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
   const [showStartModal, setShowStartModal] = useState<boolean>(false);
   const [showStopModal, setShowStopModal] = useState<boolean>(false);
   const [showCockModal, setShowCockModal] = useState<boolean>(false);
-  const [countdown, setCountdown] = useState<number>(240); // 4 minutes in seconds
-  const [autoStopWarning, setAutoStopWarning] = useState<boolean>(false);
   const [showProgressModal, setShowProgressModal] = useState<boolean>(false);
   const [progressMessage, setProgressMessage] = useState<string>('');
   const [progressCountdown, setProgressCountdown] = useState<number>(0);
@@ -51,71 +52,98 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
   // Tanker capacity from customer data passed from CustomerListScreen
   const tankerCapacity = customer.capacity || 5000; // Use customer capacity or default fallback
   const [estimatedTime, setEstimatedTime] = useState<number>(240); // Based on capacity
+  const [isCompleted, setIsCompleted] = useState<boolean>(false);
 
-  const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const autoStopTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const fillingStatusInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Hooks
+  const {fetchEstimatedTime} = useEstimatedTime();
+  
+  // Refs for callbacks used in hooks
+  const checkFillingStatusRef = useRef<(() => Promise<void>) | null>(null);
+  const handleTripEndedRef = useRef<((wasBackendStopped: boolean) => void) | null>(null);
+  const resetCountdownRef = useRef<((seconds: number) => void) | null>(null);
+  
+  // checkFillingStatus callback (must be defined before useSmartPolling)
+  const checkFillingStatus = useCallback(async () => {
+    try {
+      const fillingCustomerId = await apiService.checkFillingStatus();
+      const customerIdNum = parseInt(customer.id);
+      
+      // Detect if current customer's filling stopped
+      if (pumpRunning && fillingCustomerId !== customerIdNum) {
+        console.log('Backend auto-stopped trip - detected via polling');
+        handleTripEndedRef.current?.(true); // true = backend stopped
+      }
+      
+      setActiveFillingCustomerId(fillingCustomerId);
+      
+      // Check if a different customer has active filling
+      setOtherCustomerFilling(
+        fillingCustomerId !== null && fillingCustomerId !== customerIdNum
+      );
+    } catch (error) {
+      console.error('Error checking filling status:', error);
+      setActiveFillingCustomerId(null);
+      setOtherCustomerFilling(false);
+    }
+  }, [pumpRunning, customer.id]);
+  checkFillingStatusRef.current = checkFillingStatus;
+  
+  // Countdown timer with callbacks (must be defined before useSmartPolling)
+  const {countdown, isInFinalCountdown, resetCountdown} = useCountdownTimer({
+    initialSeconds: estimatedTime,
+    enabled: pumpRunning && !isCompleted,
+    onReachFive: () => {
+      // Show progress modal when countdown reaches 5
+      setProgressMessage('Filling complete! Stopping pump...');
+      setShowProgressModal(true);
+    },
+    onReachZero: () => {
+      // When countdown reaches 0, immediately check status
+      checkFillingStatusRef.current?.();
+      setIsCompleted(true);
+    },
+  });
+  resetCountdownRef.current = resetCountdown;
+  
+  // handleTripEnded callback (defined after hooks to use resetCountdown)
+  const handleTripEnded = useCallback((wasBackendStopped: boolean) => {
+    // Cleanup UI state
+    setPumpRunning(false);
+    setIsCompleted(false);
+    setSelectedPump(null);
+    setPurchaseId(null);
+    resetCountdownRef.current?.(0);
+    setShowProgressModal(false);
+    
+    // Refresh motor status
+    fetchMotorStatus();
+    
+    // Notify user
+    const message = wasBackendStopped 
+      ? `Filling completed automatically for ${customer.name}. Tank is full!`
+      : `Filling stopped successfully for ${customer.name}`;
+    
+    Alert.alert('Trip Complete', message);
+  }, [customer.name]);
+  handleTripEndedRef.current = handleTripEnded;
+
+  // Smart polling for filling status
+  useSmartPolling({
+    enabled: true, // Always enabled to detect backend auto-stop
+    countdown: countdown,
+    isCompleted: isCompleted,
+    onPoll: checkFillingStatus,
+  });
 
   useEffect(() => {
     fetchMotorStatus();
     checkFillingStatus();
     checkAndRestoreActiveTrip();
     
-    // Calculate estimated time based on tanker capacity
-    const timePerLiter = 0.58; // 48 seconds per liter (approximate)
-    setEstimatedTime(Math.ceil(tankerCapacity * timePerLiter));
-    
-    // Poll filling status every 10 seconds
-    fillingStatusInterval.current = setInterval(() => {
-      checkFillingStatus();
-    }, 10000);
-    
-    return () => {
-      // Cleanup timers on unmount
-      if (countdownInterval.current) {
-        clearInterval(countdownInterval.current);
-      }
-      if (autoStopTimeout.current) {
-        clearTimeout(autoStopTimeout.current);
-      }
-      if (fillingStatusInterval.current) {
-        clearInterval(fillingStatusInterval.current);
-      }
-    };
+    // Default estimated time will be set when estimated time is fetched
+    // Use fallback: 0.46 sec/L for both, 0.9 sec/L for single
+    setEstimatedTime(Math.ceil(tankerCapacity * 0.46));
   }, []);
-
-  useEffect(() => {
-    if (pumpRunning && countdown > 0) {
-      countdownInterval.current = setInterval(() => {
-        setCountdown(prev => {
-          const newCountdown = prev - 1;
-        
-          // Show warning at 3 minutes (180 seconds) remaining
-          if (newCountdown === 180) {
-            handleAutoStopWarning();
-          }
-          
-          // Auto-stop at 0
-          if (newCountdown <= 0) {
-            handleStopPump();
-            return 0;
-          }
-          
-          return newCountdown;
-        });
-      }, 1000);
-    } else {
-      if (countdownInterval.current) {
-        clearInterval(countdownInterval.current);
-      }
-    }
-
-    return () => {
-      if (countdownInterval.current) {
-        clearInterval(countdownInterval.current);
-      }
-    };
-  }, [pumpRunning, countdown]);
 
   const checkAndRestoreActiveTrip = async () => {
     try {
@@ -135,16 +163,25 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
           setSelectedPump(pumpUsed);
           setPurchaseId(activeTrip.tripId);
           
+          // Fetch estimated time and restore countdown
+          const estimated = await fetchEstimatedTime(customer.id, pumpUsed, tankerCapacity);
+          setEstimatedTime(estimated);
+          
           // Calculate time elapsed and set countdown
           if (activeTrip.tripStartTime) {
             const startTime = new Date(activeTrip.tripStartTime).getTime();
             const now = new Date().getTime();
             const elapsedSeconds = Math.floor((now - startTime) / 1000);
-            const remainingTime = Math.max(0, estimatedTime - elapsedSeconds);
+            const remainingTime = Math.max(0, estimated - elapsedSeconds);
             console.log('Setting countdown to:', remainingTime, 'seconds');
-            setCountdown(remainingTime);
+            resetCountdown(remainingTime);
+            
+            // Check if already completed
+            if (remainingTime <= 0) {
+              setIsCompleted(true);
+            }
           } else {
-            setCountdown(estimatedTime);
+            resetCountdown(estimated);
           }
         } else {
           console.log('No valid trip ID found, not restoring state');
@@ -158,22 +195,6 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
     }
   };
 
-  const checkFillingStatus = async () => {
-    try {
-      const fillingCustomerId = await apiService.checkFillingStatus();
-      setActiveFillingCustomerId(fillingCustomerId);
-      
-      // Check if a different customer has active filling
-      const customerIdNum = parseInt(customer.id);
-      setOtherCustomerFilling(
-        fillingCustomerId !== null && fillingCustomerId !== customerIdNum
-      );
-    } catch (error) {
-      console.error('Error checking filling status:', error);
-      setActiveFillingCustomerId(null);
-      setOtherCustomerFilling(false);
-    }
-  };
 
   const fetchMotorStatus = async () => {
     try {
@@ -197,15 +218,6 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
     }
   };
 
-  const handleAutoStopWarning = () => {
-    setAutoStopWarning(true);
-    // Auto-stop after 3 minutes (180 seconds) from start
-    autoStopTimeout.current = setTimeout(() => {
-      if (pumpRunning) {
-        handleStopPump();
-      }
-    }, 180000); // 3 minutes
-  };
 
   const handleStartPump = async (pump: 'inside' | 'outside' | 'both') => {
     // Check if another customer has filling in progress
@@ -219,11 +231,23 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
     }
     
     setSelectedPump(pump);
-    // Calculate estimated time based on tanker capacity
-    const timePerLiter = 0.048; // 48 seconds per liter (approximate)
-    const estimated = Math.ceil(tankerCapacity * timePerLiter);
-    setEstimatedTime(estimated);
-    setCountdown(estimated);
+    
+    // Fetch estimated time from backend
+    try {
+      const estimated = await fetchEstimatedTime(customer.id, pump, tankerCapacity);
+      setEstimatedTime(estimated);
+      resetCountdown(estimated);
+      setIsCompleted(false);
+    } catch (error) {
+      console.error('Failed to fetch estimated time:', error);
+      // Fallback will be handled by the hook
+      const fallbackRate = pump === 'both' ? 0.46 : 0.9;
+      const estimated = Math.ceil(tankerCapacity * fallbackRate);
+      setEstimatedTime(estimated);
+      resetCountdown(estimated);
+      setIsCompleted(false);
+    }
+    
     setShowStartModal(true);
   };
 
@@ -256,8 +280,8 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
     const callbacks: PumpOperationCallbacks = {
       onStartSuccess: async () => {
         setPumpRunning(true);
-        setCountdown(estimatedTime); // Use calculated time
-        setAutoStopWarning(false);
+        setIsCompleted(false);
+        resetCountdown(estimatedTime); // Use calculated time
         setShowProgressModal(false);
         Alert.alert('Success', `Filling station ${selectedPump} started successfully for ${customer.name}`);
         fetchMotorStatus(); // Refresh status
@@ -316,34 +340,19 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
         // Not used in stop operation
       },
       onStopSuccess: async () => {
-        setPumpRunning(false);
-        setCountdown(240); // Reset countdown
-        setAutoStopWarning(false);
-        setSelectedPump(null);
-
-        // Clear timers
-        if (countdownInterval.current) {
-          clearInterval(countdownInterval.current);
-        }
-        if (autoStopTimeout.current) {
-          clearTimeout(autoStopTimeout.current);
-        }
-
-        Alert.alert('Success', `Pump stopped successfully for ${customer.name}`);
-        fetchMotorStatus(); // Refresh status
-        
-        // Update trip stop time if purchaseId exists
+        // Update trip stop time via API (backend will mark as manually stopped)
         if (purchaseId) {
           try {
             await apiService.updateTripTime(customer.id, purchaseId);
-            console.log(`Trip stop time updated for customer ${customer.id}, purchaseId ${purchaseId}`);
+            console.log(`Trip ${purchaseId} manually stopped for customer ${customer.id}`);
           } catch (error) {
             console.log('Could not update trip stop time:', error);
           }
         }
         
-        // Always reset purchaseId after stop
-        setPurchaseId(null);
+        // Use common handler
+        handleTripEnded(false); // false = manual stop
+        Alert.alert('Success', `Pump stopped successfully for ${customer.name}`);
       },
       onError: (error: any, operation: 'start' | 'stop') => {
         console.error(`Error ${operation}ing pump:`, error);
@@ -619,42 +628,6 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
         </View>
       </Modal>
 
-      {/* Auto-stop Warning Modal */}
-      <Modal
-        visible={autoStopWarning}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setAutoStopWarning(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Auto-Stop Warning</Text>
-            <Text style={styles.modalText}>
-              The filling operation for {customer.name} has been running for 3 minutes. It will automatically stop in 1 minute.
-            </Text>
-            <Text style={styles.modalSubtext}>
-              You can stop it now or let it continue to complete the tanker filling.
-            </Text>
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => setAutoStopWarning(false)}>
-                <Text style={styles.modalCancelText}>Continue</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.modalConfirmButton}
-                onPress={() => {
-                  setAutoStopWarning(false);
-                  setShowStopModal(true);
-                }}>
-                <Text style={styles.modalConfirmText}>Stop Now</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       {/* Progress Modal */}
       <Modal
         visible={showProgressModal}
@@ -664,8 +637,8 @@ const AdminPumpControlScreen: React.FC<Props> = ({navigation, route}) => {
           <View style={styles.progressModalContent}>
             <ActivityIndicator size="large" color="#FF6B35" />
             <Text style={styles.progressMessage}>{progressMessage}</Text>
-            {progressCountdown > 0 && (
-              <Text style={styles.progressCountdown}>{progressCountdown}s</Text>
+            {isInFinalCountdown && countdown > 0 && (
+              <Text style={styles.progressCountdown}>{countdown}s</Text>
             )}
           </View>
         </View>

@@ -13,7 +13,8 @@ import {
   CheckMobileResponse,
   CreditBalanceResponse,
   CustomerWithCreditPointsDTO,
-  CustomerSearchResult
+  CustomerSearchResult,
+  EstimatedTimeResponse
 } from '../types';
 
 class ApiService {
@@ -280,6 +281,13 @@ class ApiService {
   // Get Credit Balance (Credit Points and Balance Amount)
   async getCreditBalance(customerId: string): Promise<CreditBalanceResponse> {
     return this.request<CreditBalanceResponse>(`/party/credit-balance/${customerId}`);
+  }
+
+  // Get Estimated Time for a customer and pump type
+  async getEstimatedTime(customerId: string, pumpUsed: string): Promise<EstimatedTimeResponse> {
+    return this.request<EstimatedTimeResponse>(
+      `/party/estimated-time?customerId=${customerId}&pumpUsed=${pumpUsed.toUpperCase()}`
+    );
   }
 
   // Get Pending Trips (unpaid trips after last zero balance)

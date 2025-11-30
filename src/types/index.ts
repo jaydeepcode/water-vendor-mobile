@@ -155,3 +155,8 @@ export interface CustomerSearchResult {
   creditPoints?: number;  // Optional, may not be available in search
   hasActiveTrip?: boolean;
 }
+
+// Estimated Time Response
+export interface EstimatedTimeResponse {
+  estimatedTimeSeconds: number;
+}
